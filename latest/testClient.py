@@ -21,6 +21,7 @@ class TCPService:
                 break
             try:
                 self.socket_tcp.send(message.encode())
+                print(f"sent TCP message {message}")
             except socket.error as e:
                 print(f"failed to send message {message}", e)
                 break
@@ -31,11 +32,14 @@ class TCPService:
     def recv_message(self):
         while True:
             try:
+                print("receiving TCP messages...")
                 message_bytes = self.socket_tcp.recv(MESSAGE_BUFFER_SIZE)
+                print(f"received TCP message {message_bytes.decode()}")
                 if not message_bytes:
                     print("tcp socket connection closed")
                     break
                 self.buffer_in.put(message_bytes.decode())
+                print(f"put TCP message {message_bytes.decode()} into buffer")
             except socket.error as e:
                 print(f"failed to receive message from server", e)
                 break
@@ -48,18 +52,15 @@ class TCPService:
         self.thread_recv.start()
         print("TCP service started")
 
-    def recv(self):
-        try:
-            message = self.buffer_in.get_nowait()
-            return message
-        except queue.Empty:
-            return None
+    def get_message(self):
+        return self.buffer_in.get() # blocking
 
-    def send(self, message:str):
+    def put_message(self, message:str):
         self.buffer_out.put(message)
 
     def stop(self):
         self.buffer_out.put(None)
+        self.buffer_in.put(None)
         self.socket_tcp.close()
         self.thread_send.join()
         self.thread_recv.join()
@@ -99,6 +100,7 @@ class UDPService:
                     print("UDP socket connection closed")
                     break
                 self.buffer_in.put(message_bytes.decode())
+                print(f"received UDP message {message_bytes.decode()}")
             except socket.error as e:
                 print(f"Failed to receive message from server: {e}")
                 break
@@ -111,18 +113,15 @@ class UDPService:
         self.thread_recv.start()
         print("UDP service started")
 
-    def recv(self):
-        try:
-            message = self.buffer_in.get_nowait()
-            return message
-        except queue.Empty:
-            return None
+    def get_message(self):
+        return self.buffer_in.get() # blocking
 
-    def send(self, message:str):
+    def put_message(self, message:str):
         self.buffer_out.put(message)
 
     def stop(self):
         self.buffer_out.put(None)
+        self.buffer_in.put(None)
         self.socket_udp.close()
         self.thread_send.join()
         self.thread_recv.join()
@@ -133,9 +132,10 @@ class UDPService:
 class Client:
     def __init__(self, ip_tcp: str, port_tcp: int):
         # Game state
-        self.game_state = 0  # 0: waiting, 1: match running, 2: match ends
-        self.player = "X"
-        self.board_state = [["" for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
+        self.session_id = None
+        self.turn = None  # 0: opponent's turn, 1: your turn
+        self.player = None
+        self.board = None
         # GUI
         self.top_level_widget = tk.Tk()
         self.top_level_widget.title("Tic Tac Toe")
@@ -149,46 +149,56 @@ class Client:
         self.tcp_service = None
         # Networking UDP
         self.udp_service = None
+        # Shutdown flag
+        self.shutdown = threading.Event()
+        # Update GUI
+        self.thread_tcp_consumer = threading.Thread(target=self.consume_message_tcp)
+        self.thread_udp_consumer = threading.Thread(target=self.consume_message_udp)
+        self.thread_update_board = threading.Thread(target=self.draw_board)
 
     def create_canvas_game_board(self) -> tk.Canvas:
         canvas = tk.Canvas(self.top_level_widget, width=CELL_SIZE * BOARD_SIZE, height=CELL_SIZE * BOARD_SIZE)
         canvas.pack(pady=CANVAS_PADDING)
-        for i in range(1, BOARD_SIZE):
-            canvas.create_line(i * CELL_SIZE, 0, i * CELL_SIZE, CELL_SIZE * BOARD_SIZE)
-            canvas.create_line(0, i * CELL_SIZE, CELL_SIZE * BOARD_SIZE, i * CELL_SIZE)
         canvas.bind("<Button-1>", self.on_click)
         return canvas
 
     def on_click(self, event):
-        if self.game_state == 1:
+        if self.turn:
             col = event.x // CELL_SIZE
             row = event.y // CELL_SIZE
-            if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE:
-                if self.board_state[row][col] == "":
-                    self.board_state[row][col] = self.player  # update board state
-                    self.draw_board()  # draw latest board state
-                else:
-                    self.display_message("Invalid move!")
+            index = row * BOARD_SIZE + col
+            if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE and self.board[index] == -1:  # BOARD_SIZE = 3
+                self.board[index] = self.player  # update board state
+                self.draw_board()
+                if self.udp_service:
+                    self.udp_service.put_message(json.dumps({
+                        "id": self.session_id,
+                        "data": index
+                    }))
+            else:
+                self.display_message("Invalid move!")
+        else:
+            self.display_message("Not your turn!")
 
     def draw_board(self):
         # Clear canvas
-        self.canvas_game_board.delete("all")  # Clear previous drawings
+        self.canvas_game_board.delete("all")
         # Draw grid
         for i in range(1, BOARD_SIZE):
             self.canvas_game_board.create_line(i * CELL_SIZE, 0, i * CELL_SIZE, CELL_SIZE * BOARD_SIZE)
             self.canvas_game_board.create_line(0, i * CELL_SIZE, CELL_SIZE * BOARD_SIZE, i * CELL_SIZE)
-        # Draw symbols from board_state
-        for row in range(BOARD_SIZE):
-            for col in range(BOARD_SIZE):
-                symbol = self.board_state[row][col]
-                if symbol:
-                    x_center = col * CELL_SIZE + CELL_SIZE // 2
-                    y_center = row * CELL_SIZE + CELL_SIZE // 2
+        if self.board and len(self.board) == 9:
+            # Draw symbols from board (1D list)
+            for row in range(BOARD_SIZE):
+                for col in range(BOARD_SIZE):
+                    index = row * BOARD_SIZE + col
+                    value = self.board[index]
+                    symbol = "X" if value == 0 else "O" if value == 1 else None
                     color = "blue" if symbol == "X" else "red"
-                    self.canvas_game_board.create_text(x_center, y_center, text=symbol, font=("Arial", 48, "bold"),
-                                                       fill=color)
-        # Sets next turn, only for testing
-        self.player = "O" if self.player == "X" else "X"
+                    if symbol:
+                        x_center = col * CELL_SIZE + CELL_SIZE // 2
+                        y_center = row * CELL_SIZE + CELL_SIZE // 2
+                        self.canvas_game_board.create_text(x_center, y_center, text=symbol, font=("Arial", 48, "bold"), fill=color)
 
     def create_widget_message_display(self) -> tk.Text:
         frame_message_display = tk.Frame(self.top_level_widget)
@@ -214,7 +224,7 @@ class Client:
         frame_game_sate.pack(pady=FRAMES_PADDING, fill="x")
         button_find_new_match = tk.Button(frame_game_sate, text="Find New Match", command=self.find_new_match)
         button_find_new_match.pack(side="left")
-        button_exit = tk.Button(frame_game_sate, text="Exit Game", command=self.shutdown)
+        button_exit = tk.Button(frame_game_sate, text="Exit Game", command=self.stop)
         button_exit.pack(padx=12, side="left")
 
     def display_message(self, message) -> None:
@@ -227,29 +237,105 @@ class Client:
         message = self.entry_message_input.get().strip()
         if message:
             self.display_message(f"You: {message}")
-            # TODO: Send message to opponent over TCP
+            if self.tcp_service:
+                self.tcp_service.put_message(json.dumps({"type": "message", "data": message}))
             self.entry_message_input.delete(0, tk.END)
         return message
 
     def find_new_match(self):
-        self.tcp_service = TCPService(self.ip_tcp, self.port_tcp)
-        self.tcp_service.start()
-        try:
-            while True:
-                message_bytes = self.tcp_service.recv()
-                json.JSONDecoder.decode(message_bytes)
+        # finds new match
+        if self.tcp_service is None:
+            self.display_message("connecting to TCP server...")
+            self.tcp_service = TCPService(self.ip_tcp, self.port_tcp)
+            self.tcp_service.start()
+            self.display_message("match making...")
+        # quits ongoing match
+        # else:
+        #     self.display_message("you lost")
+        #     self.tcp_service.put_message(json.dumps({"flag": "fin", "res": -1}))
+        #     self.tcp_service.stop()
+        #     self.tcp_service = None
+        #     if self.udp_service:
+        #         self.udp_service.stop()
+        #         self.udp_service = None
+        #     self.display_message("connecting to TCP server...")
+        #     self.tcp_service = TCPService(self.ip_tcp, self.port_tcp)
+        #     self.tcp_service.start()
+        #     self.display_message("match making...")
 
-        except socket.error as e:
-            print()
+    def consume_message_tcp(self):
+        while not self.shutdown.set():
+            if self.tcp_service:
+                msg = self.tcp_service.get_message()
+                if msg is None:
+                    break
+                msg_json = json.loads(msg)
+                print(f"tcp message {msg_json}")
+                if msg_json["type"] == "control" and msg_json["data"]["flag"] == "init":
+                    self.display_message("match found...")
+                    self.session_id = msg_json["data"]["id"]
+                    ip_udp = msg_json["data"]["ip"]
+                    port_udp = msg_json["data"]["port"]
+                    self.display_message("connecting to UDP server...")
+                    self.udp_service = UDPService("127.0.0.1", 33333, ip_udp, port_udp)
+                    self.udp_service.start()
+                    self.udp_service.put_message(
+                        json.dumps({"id": self.session_id, "data": -1})
+                    )
+                elif msg_json["type"] == "control" and msg_json["data"]["flag"] == "stats":
+                    self.display_message(f"Your statistics: {msg_json["data"]["res"]}")
+                elif msg_json["type"] == "message":
+                    self.display_message(f"Opponent: {msg_json["data"]}")
+
+    def consume_message_udp(self):
+        while not self.shutdown.set():
+            if self.udp_service:
+                msg = self.udp_service.get_message()
+                if msg is None:
+                    break
+                msg_json = json.loads(msg)
+                print(f"udp message {msg_json}")
+                self.session_id = msg_json["id"]
+                self.turn = msg_json["turn"]
+                if self.turn:
+                    self.player = 0
+                else:
+                    self.player = 1
+                data = msg_json["data"]
+                size = len(data)
+                if size == 1 and data[0] == -2:
+                    self.display_message("waiting for opponent to join...")
+                elif size == 1 and data[0] == -1:
+                    self.display_message("you lost")
+                elif size == 1 and data[0] == 0:
+                    self.display_message("draw")
+                elif size == 1 and data[0] == 1:
+                    self.display_message("you won")
+                else:
+                    self.display_message("opponent has joined")
+                    self.board = data
+                    self.draw_board()
+                    if self.turn == True:
+                        self.display_message("your turn")
+                    else:
+                        self.display_message("opponent's turn")
 
     def run(self):
+        self.thread_tcp_consumer.start()
+        self.thread_udp_consumer.start()
+        self.thread_update_board.start()
+        print("thread update gui running")
         self.top_level_widget.mainloop()
 
-    def shutdown(self):
+    def stop(self):
+        self.shutdown.set()
         if self.tcp_service:
             self.tcp_service.stop()
         if self.udp_service:
             self.udp_service.stop()
+        self.thread_tcp_consumer.join()
+        self.thread_udp_consumer.join()
+        self.thread_update_board.join()
         self.top_level_widget.quit()
 
 CELL_SIZE = 100
@@ -262,5 +348,5 @@ MESSAGE_BUFFER_SIZE = 1024
 
 
 if __name__ == '__main__':
-    client = Client("127.0.0.1", 33333)
+    client = Client("127.0.0.1", 44444)
     client.run()
