@@ -6,7 +6,7 @@ import json
 
 
 class TCPService:
-    def __init__(self, client_ip:str, client_port:int, server_ip: str, server_port: int):
+    def __init__(self, client_ip: str, client_port: int, server_ip: str, server_port: int):
         self.socket_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket_tcp.bind((client_ip, client_port))
         self.socket_tcp.connect((server_ip, server_port))
@@ -142,7 +142,8 @@ class UDPService:
 
 
 class Client:
-    def __init__(self, ip_tcp_server: str, port_tcp_server: int, ip_client:str, port_tcp_client:int, port_udp_client:int):
+    def __init__(self, ip_tcp_server: str, port_tcp_server: int, ip_client: str, port_tcp_client: int,
+                 port_udp_client: int):
         # Game state
         self.session_id = None
         self.turn = None  # False: opponent's turn, True: your turn
@@ -186,7 +187,8 @@ class Client:
                     self.display_message("connecting to TCP server...")
                     self.thread_tcp_consumer = threading.Thread(target=self.consume_message_tcp)
                     self.thread_tcp_consumer.start()
-                    self.tcp_service = TCPService(self.ip_client, self.port_tcp_client, self.ip_tcp_server, self.port_tcp_server)
+                    self.tcp_service = TCPService(self.ip_client, self.port_tcp_client, self.ip_tcp_server,
+                                                  self.port_tcp_server)
                     self.tcp_service.start()
                     self.display_message("match making...")
                 elif update_type == "restart":
@@ -416,6 +418,7 @@ class Client:
 
     def exit(self):
         self.update_queue.put(("exit",))
+
 
 # GUI
 CELL_SIZE = 100

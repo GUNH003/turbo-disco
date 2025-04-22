@@ -13,7 +13,6 @@ Server -> Client:
                                                     }
                                                     {
                                                         "flag": str, "stats"
-                                                        "err": bool, true for error case e.g. opponent disconnected
                                                         "res": str, "win:x,loss:x,draw:x"
                                                     }
 }
@@ -43,18 +42,18 @@ class StatsDict:
         self.lock = threading.Lock()
         self.stats = {}
 
-    def increment(self, key:str, field:str):
+    def increment(self, key: str, field: str):
         with self.lock:
             if key not in self.stats:
                 self.stats[key] = {"win": 0, "loss": 0, "draw": 0}
             self.stats[key][field] += 1
 
-    def put(self, key:str, value:dict):
+    def put(self, key: str, value: dict):
         with self.lock:
             if key not in self.stats:
                 self.stats[key] = value
 
-    def get(self, key:str):
+    def get(self, key: str):
         with self.lock:
             res = None
             if key in self.stats:
@@ -106,7 +105,7 @@ class Session:
                     print(f"received message: {message_json}")
                     # control message
                     if message_json["type"] == "control":
-                        data_json = message_json["data"]    # get data
+                        data_json = message_json["data"]  # get data
                         # ------------------------ if game is finished ------------------------
                         if data_json["flag"] == "fin":
                             client_key = client_from.client_address.__str__()  # serialize client key
@@ -122,7 +121,8 @@ class Session:
                     # chat message
                     elif message_json["type"] == "message":
                         client_to.client_socket.send(message_bytes)
-                        print(f"forwarded {json.loads(message_bytes)} from {client_from.client_address} to {client_to.client_address}")
+                        print(
+                            f"forwarded {json.loads(message_bytes)} from {client_from.client_address} to {client_to.client_address}")
                 except json.decoder.JSONDecodeError:
                     print("failed to parse message")
                     continue
@@ -194,7 +194,7 @@ class SessionManager:
             except Exception as e:
                 print("session manager error:", e)
                 continue
-        self.worker_pool.shutdown(wait=False) # does not wait for client to close connections
+        self.worker_pool.shutdown(wait=False)  # does not wait for client to close connections
 
     @staticmethod
     def run_session(session: Session) -> None:

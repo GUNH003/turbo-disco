@@ -25,8 +25,10 @@ import queue
 import json
 from concurrent.futures import ThreadPoolExecutor
 
+
 class UDPService:
-    def __init__(self, host_ip: str, recv_port: int, send_port: int, message_buffer_size: int, buffer_in: queue.Queue, buffer_out: queue.Queue):
+    def __init__(self, host_ip: str, recv_port: int, send_port: int, message_buffer_size: int, buffer_in: queue.Queue,
+                 buffer_out: queue.Queue):
         self.host_ip = host_ip
         self.recv_port = recv_port
         self.send_port = send_port
@@ -78,7 +80,6 @@ class UDPService:
         self.thread_send.start()
         self.thread_recv.start()
 
-
     def stop(self):
         print("stopping udp service...")
         self.buffer_out.put(None)
@@ -112,7 +113,7 @@ class SessionManager:
     def is_draw_state(self, data: list[int]) -> bool:
         return -1 not in data
 
-    def to_buffer_out(self, client_address: tuple, session_id: str, turn: bool, res:int, game_data: list[int]) -> None:
+    def to_buffer_out(self, client_address: tuple, session_id: str, turn: bool, res: int, game_data: list[int]) -> None:
         message_json = {
             "client": client_address,
             "message": {
@@ -130,9 +131,9 @@ class SessionManager:
             if message_in is None:
                 break
             # retrieve data
-            client_address = message_in["client"] # tuple
-            client_move = message_in["message"]["data"] # int
-            session_id = message_in["message"]["id"] # str
+            client_address = message_in["client"]  # tuple
+            client_move = message_in["message"]["data"]  # int
+            session_id = message_in["message"]["id"]  # str
             # acquire lock
             with self.lock_sessions:
                 session = None if session_id not in self.sessions else self.sessions[session_id]
@@ -158,13 +159,14 @@ class SessionManager:
                     session["clients"].append(client_address)
                     self.to_buffer_out(client_address, session_id, False, -3, session["data"])
                     # commit outbound message to both clients, client 0 always has the first move, -2 for ongoing match
-                    self.to_buffer_out(session["clients"][0], session_id,True, -2, session["data"])
-                    self.to_buffer_out(session["clients"][1], session_id,False, -2, session["data"])
+                    self.to_buffer_out(session["clients"][0], session_id, True, -2, session["data"])
+                    self.to_buffer_out(session["clients"][1], session_id, False, -2, session["data"])
                     continue
                 # ----------------------- if session exists and both players are present -----------------------
-                current_player = session["turn"] # gets the current player, which equals "turn" and index of "clients"
+                current_player = session["turn"]  # gets the current player, which equals "turn" and index of "clients"
                 # ignores update if the same player tries to update the session again, or if the player move is invalid, player loses
-                if client_address != session["clients"][current_player] or not self.is_valid_move(client_move, session["data"]):
+                if client_address != session["clients"][current_player] or not self.is_valid_move(client_move,
+                                                                                                  session["data"]):
                     self.to_buffer_out(session["clients"][current_player], session_id, False, -1, session["data"])
                     self.to_buffer_out(session["clients"][(current_player + 1) % 2], session_id, False, 1,
                                        session["data"])
@@ -176,15 +178,17 @@ class SessionManager:
                 # check for session termination [start] -----------------------
                 if self.is_win_state(session["data"]):
                     # commit outbound message
-                    self.to_buffer_out(session["clients"][current_player], session_id,False, 1, session["data"])
-                    self.to_buffer_out(session["clients"][(current_player + 1) % 2], session_id, False, -1, session["data"])
+                    self.to_buffer_out(session["clients"][current_player], session_id, False, 1, session["data"])
+                    self.to_buffer_out(session["clients"][(current_player + 1) % 2], session_id, False, -1,
+                                       session["data"])
                     # delete session
                     self.sessions.pop(session_id)
                     continue
                 if self.is_draw_state(session["data"]):
                     # commit outbound message
-                    self.to_buffer_out(session["clients"][current_player], session_id,  False, 0, session["data"])
-                    self.to_buffer_out(session["clients"][(current_player + 1) % 2], session_id, False, 0, session["data"])
+                    self.to_buffer_out(session["clients"][current_player], session_id, False, 0, session["data"])
+                    self.to_buffer_out(session["clients"][(current_player + 1) % 2], session_id, False, 0,
+                                       session["data"])
                     # delete session
                     self.sessions.pop(session_id)
                     continue
@@ -206,7 +210,8 @@ class SessionManager:
 
 
 class UDPServer:
-    def __init__(self, host_id: str, recv_port: int, send_port:int, message_buffer_size: int, session_manager_worker_pool_size: int):
+    def __init__(self, host_id: str, recv_port: int, send_port: int, message_buffer_size: int,
+                 session_manager_worker_pool_size: int):
         self.host_id = host_id
         self.recv_port = recv_port
         self.send_port = send_port
@@ -214,7 +219,8 @@ class UDPServer:
         self.session_manager_worker_pool_size = session_manager_worker_pool_size
         self.buffer_in = queue.Queue()
         self.buffer_out = queue.Queue()
-        self.udp_service = UDPService(self.host_id, self.recv_port, self.send_port, self.message_buffer_size, self.buffer_in, self.buffer_out)
+        self.udp_service = UDPService(self.host_id, self.recv_port, self.send_port, self.message_buffer_size,
+                                      self.buffer_in, self.buffer_out)
         self.session_manager = SessionManager(self.buffer_in, self.buffer_out, self.session_manager_worker_pool_size)
 
     def start(self):
@@ -237,7 +243,8 @@ MESSAGE_BUFFER_SIZE = 1024
 SESSION_MANAGER_WORKER_POOL_SIZE = 8
 
 if __name__ == '__main__':
-    udp_server = UDPServer(SERVER_UDP_IP, SERVER_UDP_RECV_PORT, SERVER_UDP_SEND_PORT, MESSAGE_BUFFER_SIZE, SESSION_MANAGER_WORKER_POOL_SIZE)
+    udp_server = UDPServer(SERVER_UDP_IP, SERVER_UDP_RECV_PORT, SERVER_UDP_SEND_PORT, MESSAGE_BUFFER_SIZE,
+                           SESSION_MANAGER_WORKER_POOL_SIZE)
     udp_server.start()
     try:
         while True:
