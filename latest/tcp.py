@@ -13,6 +13,7 @@ Server -> Client:
                                                     }
                                                     {
                                                         "flag": str, "stats"
+                                                        "err": bool, true for error case e.g. opponent disconnected
                                                         "res": str, "win:x,loss:x,draw:x"
                                                     }
 }
@@ -24,9 +25,6 @@ Client -> Server:
                                                     {
                                                         "flag": str, "fin"
                                                         "res": int, -1 lost, 0 draw, 1 won
-                                                    }
-                                                    {
-                                                        "flag": str, "stats"
                                                     }
 }
 
@@ -81,40 +79,46 @@ class Session:
         self.stats = stats
         self.session_shutdown = threading.Event()
 
-    def forward_message(self, client_from: ClientConnection, client_to: ClientConnection) -> None:
+    def send_stats(self, key, client_to, res):
+        # update the stats
+        if res == -1:
+            self.stats.increment(key, "loss")
+        elif res == 0:
+            self.stats.increment(key, "draw")
+        elif res == 1:
+            self.stats.increment(key, "win")
+        # create stats message and send it back
+        res = self.stats.get(key)
+        message = {"type": "control", "data": {"flag": "stats", "res": res}}
+        client_to.client_socket.send(json.dumps(message).encode("utf8"))
+
+    def process_message(self, client_from: ClientConnection, client_to: ClientConnection) -> None:
         while not self.session_shutdown.is_set():
             try:
                 message_bytes = client_from.client_socket.recv(self.message_buffer_size)  # bytes
-                # break if no message received / connection closed
                 if not message_bytes:
-                    self.session_shutdown.set()
+                    client_key = client_to.client_address.__str__()  # serialize client key
+                    self.send_stats(client_key, client_to, 1)
                     break
-                # otherwise, parse and process message received
+                # parse and process message received
                 try:
                     message_json = json.loads(message_bytes)
+                    print(f"received message: {message_json}")
                     # control message
                     if message_json["type"] == "control":
                         data_json = message_json["data"]    # get data
-                        client_key = client_from.client_address.__str__()   # serialize client key
                         # ------------------------ if game is finished ------------------------
                         if data_json["flag"] == "fin":
+                            client_key = client_from.client_address.__str__()  # serialize client key
+                            # update the stats
                             if data_json["res"] == -1:
-                                self.stats.increment(client_key, "loss")
+                                self.send_stats(client_key, client_from, -1)
                             elif data_json["res"] == 0:
-                                self.stats.increment(client_key, "draw")
+                                self.send_stats(client_key, client_from, 0)
                             elif data_json["res"] == 1:
-                                self.stats.increment(client_key, "win")
+                                self.send_stats(client_key, client_from, 1)
+                            self.session_shutdown.set()
                             break
-                        # ------------------------ if client requests statistics ------------------------
-                        elif data_json["flag"] == "stats":
-                            if client_key not in self.stats:
-                                self.stats.put(client_key, {"win": 0, "loss": 0, "draw": 0})
-                                res = {"win": 0, "loss": 0, "draw": 0}
-                            else:
-                                value = self.stats.get(client_key)
-                                res = {"win": value["win"], "loss": value["loss"], "draw": value["draw"]}
-                            message = {"flag": "stats", "res": res}
-                            client_from.client_socket.send(json.dumps(message).encode("utf8"))
                     # chat message
                     elif message_json["type"] == "message":
                         client_to.client_socket.send(message_bytes)
@@ -122,18 +126,21 @@ class Session:
                 except json.decoder.JSONDecodeError:
                     print("failed to parse message")
                     continue
+            except socket.error as e:
+                print("socket error", e)
+                self.session_shutdown.set()
+                break
             except Exception as e:
                 print("session error:", e)
+                self.session_shutdown.set()
                 break
 
     def run(self) -> None:
         # sends UDP server info
         self.init_match()
         # starts two threads to handle bidirectional message exchange between clients because recv() call is blocking
-        thread_1 = threading.Thread(target=self.forward_message,
-                                    args=(self.client_1, self.client_2))
-        thread_2 = threading.Thread(target=self.forward_message,
-                                    args=(self.client_2, self.client_1))
+        thread_1 = threading.Thread(target=self.process_message, args=(self.client_1, self.client_2))
+        thread_2 = threading.Thread(target=self.process_message, args=(self.client_2, self.client_1))
         # starts threads
         thread_1.start()
         thread_2.start()
@@ -237,15 +244,15 @@ class TCPServer:
             print("session manager thread pool stopped...")
 
 
-TCP_SERVER_IP = "127.0.0.1"
-TCP_SERVER_PORT = 44444
-UDP_SERVER_IP = "127.0.0.1"
-UDP_SERVER_PORT = 55555
+SERVER_TCP_IP = "127.0.0.1"
+SERVER_TCP_PORT = 55500
+SERVER_UDP_IP = "127.0.0.1"
+SERVER_UDP_PORT = 55501
 MESSAGE_BUFFER_SIZE = 1024
 SOCKET_BACK_LOG = 512
 SESSION_MANAGER_WORKER_POOL_SIZE = 32
 
 if __name__ == "__main__":
-    tcp_server = TCPServer(TCP_SERVER_IP, TCP_SERVER_PORT, UDP_SERVER_IP, UDP_SERVER_PORT, MESSAGE_BUFFER_SIZE,
+    tcp_server = TCPServer(SERVER_TCP_IP, SERVER_TCP_PORT, SERVER_UDP_IP, SERVER_UDP_PORT, MESSAGE_BUFFER_SIZE,
                            SOCKET_BACK_LOG, SESSION_MANAGER_WORKER_POOL_SIZE)
     tcp_server.start()

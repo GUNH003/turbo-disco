@@ -6,45 +6,53 @@ import json
 
 
 class TCPService:
-    def __init__(self, serve_ip: str, server_port: int):
+    def __init__(self, client_ip:str, client_port:int, server_ip: str, server_port: int):
         self.socket_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket_tcp.connect((serve_ip, server_port))
+        self.socket_tcp.bind((client_ip, client_port))
+        self.socket_tcp.connect((server_ip, server_port))
         self.buffer_in = queue.Queue()
         self.buffer_out = queue.Queue()
         self.thread_send = threading.Thread(target=self.send_message)
         self.thread_recv = threading.Thread(target=self.recv_message)
+        self.shutdown = threading.Event()
 
     def send_message(self):
-        while True:
+        while not self.shutdown.is_set():
             message = self.buffer_out.get()
             if message is None:
+                self.shutdown.set()
                 break
             try:
                 self.socket_tcp.send(message.encode())
                 print(f"sent TCP message {message}")
             except socket.error as e:
                 print(f"failed to send message {message}", e)
+                self.shutdown.set()
                 break
             except KeyboardInterrupt:
                 print("tcp send service received keyboard interrupt")
+                self.shutdown.set()
                 break
 
     def recv_message(self):
-        while True:
+        while not self.shutdown.is_set():
             try:
                 print("receiving TCP messages...")
                 message_bytes = self.socket_tcp.recv(MESSAGE_BUFFER_SIZE)
                 print(f"received TCP message {message_bytes.decode()}")
                 if not message_bytes:
                     print("tcp socket connection closed")
+                    self.shutdown.set()
                     break
                 self.buffer_in.put(message_bytes.decode())
                 print(f"put TCP message {message_bytes.decode()} into buffer")
             except socket.error as e:
                 print(f"failed to receive message from server", e)
+                self.shutdown.set()
                 break
             except KeyboardInterrupt:
                 print("tcp recv service received keyboard interrupt")
+                self.shutdown.set()
                 break
 
     def start(self):
@@ -53,59 +61,63 @@ class TCPService:
         print("TCP service started")
 
     def get_message(self):
-        return self.buffer_in.get() # blocking
+        return self.buffer_in.get()  # blocking
 
-    def put_message(self, message:str):
+    def put_message(self, message: str):
         self.buffer_out.put(message)
 
     def stop(self):
+        self.shutdown.set()
         self.buffer_out.put(None)
-        self.buffer_in.put(None)
-        self.socket_tcp.close()
         self.thread_send.join()
+        self.socket_tcp.close()
         self.thread_recv.join()
+        self.buffer_in.put(None)
         print("TCP service stopped")
 
 
 class UDPService:
-    def __init__(self, client_ip: str, client_port: int, serve_ip: str, server_port: int):
+    def __init__(self, client_ip: str, client_port: int, server_ip: str, server_port: int):
         self.socket_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket_udp.bind((client_ip, client_port))
-        self.server_ip = serve_ip
+        self.server_ip = server_ip
         self.server_port = server_port
         self.buffer_in = queue.Queue()
         self.buffer_out = queue.Queue()
         self.thread_send = threading.Thread(target=self.send_message)
         self.thread_recv = threading.Thread(target=self.recv_message)
+        self.shutdown = threading.Event()
 
     def send_message(self):
-        while True:
+        while not self.shutdown.is_set():
             message = self.buffer_out.get()
             if message is None:
+                self.shutdown.set()
                 break
             try:
                 self.socket_udp.sendto(message.encode(), (self.server_ip, self.server_port))
             except socket.error as e:
                 print(f"Failed to send message {message}: {e}")
+                self.shutdown.set()
                 break
             except KeyboardInterrupt:
                 print("UDP send service received keyboard interrupt")
+                self.shutdown.set()
                 break
 
     def recv_message(self):
-        while True:
+        while not self.shutdown.is_set():
             try:
                 message_bytes, addr = self.socket_udp.recvfrom(MESSAGE_BUFFER_SIZE)
-                if not message_bytes:
-                    print("UDP socket connection closed")
-                    break
                 self.buffer_in.put(message_bytes.decode())
                 print(f"received UDP message {message_bytes.decode()}")
             except socket.error as e:
                 print(f"Failed to receive message from server: {e}")
+                self.shutdown.set()
                 break
             except KeyboardInterrupt:
                 print("UDP recv service received keyboard interrupt")
+                self.shutdown.set()
                 break
 
     def start(self):
@@ -114,47 +126,139 @@ class UDPService:
         print("UDP service started")
 
     def get_message(self):
-        return self.buffer_in.get() # blocking
+        return self.buffer_in.get()  # blocking
 
-    def put_message(self, message:str):
+    def put_message(self, message: str):
         self.buffer_out.put(message)
 
     def stop(self):
+        self.shutdown.set()
         self.buffer_out.put(None)
-        self.buffer_in.put(None)
-        self.socket_udp.close()
         self.thread_send.join()
+        self.socket_udp.close()
         self.thread_recv.join()
+        self.buffer_in.put(None)
         print("UDP service stopped")
 
 
-
 class Client:
-    def __init__(self, ip_tcp: str, port_tcp: int):
+    def __init__(self, ip_tcp_server: str, port_tcp_server: int, ip_client:str, port_tcp_client:int, port_udp_client:int):
         # Game state
         self.session_id = None
-        self.turn = None  # 0: opponent's turn, 1: your turn
-        self.player = None
-        self.board = None
+        self.turn = None  # False: opponent's turn, True: your turn
+        self.player = None  # 0: X, 1:O
+        self.board = None  # list[int]
+        self.stats = None  # str
+        self.match_over = True
         # GUI
         self.top_level_widget = tk.Tk()
         self.top_level_widget.title("Tic Tac Toe")
+        self.top_level_widget.protocol("WM_DELETE_WINDOW", self.stop)
         self.canvas_game_board = self.create_canvas_game_board()
         self.widget_message_display = self.create_widget_message_display()
         self.entry_message_input = self.create_entry_message_input()
         self.create_button_game_state()
-        # Networking TCP
-        self.ip_tcp = ip_tcp
-        self.port_tcp = port_tcp
+        self.draw_board()
+        self.update_lock = threading.Lock()
+        self.update_queue = queue.Queue()
+        # Networking
+        self.ip_tcp_server = ip_tcp_server
+        self.port_tcp_server = port_tcp_server
+        self.ip_client = ip_client
+        self.port_tcp_client = port_tcp_client
+        self.port_udp_client = port_udp_client
         self.tcp_service = None
-        # Networking UDP
         self.udp_service = None
         # Shutdown flag
         self.shutdown = threading.Event()
         # Update GUI
-        self.thread_tcp_consumer = threading.Thread(target=self.consume_message_tcp)
-        self.thread_udp_consumer = threading.Thread(target=self.consume_message_udp)
-        self.thread_update_board = threading.Thread(target=self.draw_board)
+        self.thread_tcp_consumer = None
+        self.thread_udp_consumer = None
+        self.top_level_widget.after(10, self.process_gui_updates)
+
+    def process_gui_updates(self):
+        try:
+            while True:
+                update_type, *args = self.update_queue.get_nowait()
+                if update_type == "message":
+                    self.display_message(*args)
+                elif update_type == "start_tcp":
+                    self.display_message("connecting to TCP server...")
+                    self.thread_tcp_consumer = threading.Thread(target=self.consume_message_tcp)
+                    self.thread_tcp_consumer.start()
+                    self.tcp_service = TCPService(self.ip_client, self.port_tcp_client, self.ip_tcp_server, self.port_tcp_server)
+                    self.tcp_service.start()
+                    self.display_message("match making...")
+                elif update_type == "restart":
+                    if not self.match_over:
+                        self.display_message("current match is not over, cannot find new match...")
+                    else:
+                        self.stop_services()
+                        self.session_id = None
+                        self.turn = None
+                        self.player = None
+                        self.board = None
+                        self.stats = None
+                        self.shutdown.clear()
+                        self.update_queue.put(("start_tcp",))
+                elif update_type == "start_udp":
+                    self.display_message("connecting to UDP server...")
+                    self.thread_udp_consumer = threading.Thread(target=self.consume_message_udp)
+                    self.thread_udp_consumer.start()
+                    msg_json = args[0]
+                    self.session_id = msg_json["data"]["id"]
+                    ip_udp = msg_json["data"]["ip"]
+                    port_udp = msg_json["data"]["port"]
+                    self.udp_service = UDPService(self.ip_client, self.port_udp_client, ip_udp, port_udp)
+                    self.udp_service.start()
+                    self.udp_service.put_message(json.dumps({"id": self.session_id, "data": -1}))
+                    self.match_over = False
+                elif update_type == "init_match":
+                    msg_json = args[0]
+                    self.session_id = msg_json["id"]
+                    self.player = 0 if msg_json["turn"] else 1
+                    self.display_message("Waiting for opponent")
+                elif update_type == "update_match":
+                    msg_json = args[0]
+                    if self.board is None:
+                        self.display_message("Opponent has joined")
+                    self.turn = msg_json["turn"]
+                    if self.turn:
+                        self.display_message("Your turn")
+                    else:
+                        self.display_message("Opponent's turn")
+                    self.board = msg_json["data"]
+                    self.draw_board()
+                elif update_type == "end_match":
+                    msg_json = args[0]
+                    res = msg_json["res"]
+                    if res == -1:
+                        self.display_message("Your lost")
+                        self.tcp_service.put_message(
+                            json.dumps({"type": "control", "data": {"flag": "fin", "res": res}}))
+                    elif res == 0:
+                        self.display_message("Draw")
+                        self.tcp_service.put_message(
+                            json.dumps({"type": "control", "data": {"flag": "fin", "res": res}}))
+                    elif res == 1:
+                        self.display_message("Your won")
+                        self.tcp_service.put_message(
+                            json.dumps({"type": "control", "data": {"flag": "fin", "res": res}}))
+                    self.board = msg_json["data"]
+                    self.draw_board()
+                    self.udp_service.put_message(json.dumps({"id": self.session_id, "data": -2}))
+                    self.display_message("UDP clean message sent")
+                elif update_type == "stats":
+                    msg_json = args[0]
+                    self.display_message("Stats: " + json.dumps(msg_json["data"]["res"]))
+                    self.match_over = True
+                elif update_type == "exit":
+                    self.shutdown.set()
+                    self.stop()
+
+        except queue.Empty:
+            pass
+        self.top_level_widget.after(10, self.process_gui_updates)
 
     def create_canvas_game_board(self) -> tk.Canvas:
         canvas = tk.Canvas(self.top_level_widget, width=CELL_SIZE * BOARD_SIZE, height=CELL_SIZE * BOARD_SIZE)
@@ -169,7 +273,7 @@ class Client:
             index = row * BOARD_SIZE + col
             if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE and self.board[index] == -1:  # BOARD_SIZE = 3
                 self.board[index] = self.player  # update board state
-                self.draw_board()
+                self.update_queue.put(("board", self.board.copy()))  # Sends a copy
                 if self.udp_service:
                     self.udp_service.put_message(json.dumps({
                         "id": self.session_id,
@@ -198,7 +302,8 @@ class Client:
                     if symbol:
                         x_center = col * CELL_SIZE + CELL_SIZE // 2
                         y_center = row * CELL_SIZE + CELL_SIZE // 2
-                        self.canvas_game_board.create_text(x_center, y_center, text=symbol, font=("Arial", 48, "bold"), fill=color)
+                        self.canvas_game_board.create_text(x_center, y_center, text=symbol, font=("Arial", 48, "bold"),
+                                                           fill=color)
 
     def create_widget_message_display(self) -> tk.Text:
         frame_message_display = tk.Frame(self.top_level_widget)
@@ -236,7 +341,7 @@ class Client:
     def send_message(self) -> str:
         message = self.entry_message_input.get().strip()
         if message:
-            self.display_message(f"You: {message}")
+            self.update_queue.put(("message", "You: " + message))
             if self.tcp_service:
                 self.tcp_service.put_message(json.dumps({"type": "message", "data": message}))
             self.entry_message_input.delete(0, tk.END)
@@ -245,26 +350,13 @@ class Client:
     def find_new_match(self):
         # finds new match
         if self.tcp_service is None:
-            self.display_message("connecting to TCP server...")
-            self.tcp_service = TCPService(self.ip_tcp, self.port_tcp)
-            self.tcp_service.start()
-            self.display_message("match making...")
-        # quits ongoing match
-        # else:
-        #     self.display_message("you lost")
-        #     self.tcp_service.put_message(json.dumps({"flag": "fin", "res": -1}))
-        #     self.tcp_service.stop()
-        #     self.tcp_service = None
-        #     if self.udp_service:
-        #         self.udp_service.stop()
-        #         self.udp_service = None
-        #     self.display_message("connecting to TCP server...")
-        #     self.tcp_service = TCPService(self.ip_tcp, self.port_tcp)
-        #     self.tcp_service.start()
-        #     self.display_message("match making...")
+            self.update_queue.put(("start_tcp",))
+        else:
+            self.update_queue.put(("restart",))
 
     def consume_message_tcp(self):
-        while not self.shutdown.set():
+        print("thread consumer TCP started")
+        while not self.shutdown.is_set():
             if self.tcp_service:
                 msg = self.tcp_service.get_message()
                 if msg is None:
@@ -272,81 +364,74 @@ class Client:
                 msg_json = json.loads(msg)
                 print(f"tcp message {msg_json}")
                 if msg_json["type"] == "control" and msg_json["data"]["flag"] == "init":
-                    self.display_message("match found...")
-                    self.session_id = msg_json["data"]["id"]
-                    ip_udp = msg_json["data"]["ip"]
-                    port_udp = msg_json["data"]["port"]
-                    self.display_message("connecting to UDP server...")
-                    self.udp_service = UDPService("127.0.0.1", 33333, ip_udp, port_udp)
-                    self.udp_service.start()
-                    self.udp_service.put_message(
-                        json.dumps({"id": self.session_id, "data": -1})
-                    )
+                    self.update_queue.put(("start_udp", msg_json))
                 elif msg_json["type"] == "control" and msg_json["data"]["flag"] == "stats":
-                    self.display_message(f"Your statistics: {msg_json["data"]["res"]}")
+                    self.update_queue.put(("stats", msg_json))
                 elif msg_json["type"] == "message":
-                    self.display_message(f"Opponent: {msg_json["data"]}")
+                    self.update_queue.put(("message", "Opponent: " + msg_json["data"]))
+        print("thread consumer TCP stopped")
 
     def consume_message_udp(self):
-        while not self.shutdown.set():
+        print("thread consumer udp started")
+        while not self.shutdown.is_set():
             if self.udp_service:
                 msg = self.udp_service.get_message()
                 if msg is None:
                     break
                 msg_json = json.loads(msg)
                 print(f"udp message {msg_json}")
-                self.session_id = msg_json["id"]
-                self.turn = msg_json["turn"]
-                if self.turn:
-                    self.player = 0
+                # match state
+                res = msg_json["res"]
+                if res == -3:
+                    self.update_queue.put(("init_match", msg_json))
+                elif res == -2:
+                    self.update_queue.put(("update_match", msg_json))
                 else:
-                    self.player = 1
-                data = msg_json["data"]
-                size = len(data)
-                if size == 1 and data[0] == -2:
-                    self.display_message("waiting for opponent to join...")
-                elif size == 1 and data[0] == -1:
-                    self.display_message("you lost")
-                elif size == 1 and data[0] == 0:
-                    self.display_message("draw")
-                elif size == 1 and data[0] == 1:
-                    self.display_message("you won")
-                else:
-                    self.display_message("opponent has joined")
-                    self.board = data
-                    self.draw_board()
-                    if self.turn == True:
-                        self.display_message("your turn")
-                    else:
-                        self.display_message("opponent's turn")
+                    self.update_queue.put(("end_match", msg_json))
+        print("thread consumer UDP stopped")
 
     def run(self):
-        self.thread_tcp_consumer.start()
-        self.thread_udp_consumer.start()
-        self.thread_update_board.start()
-        print("thread update gui running")
+        print("thread gui update running")
         self.top_level_widget.mainloop()
 
-    def stop(self):
+    def stop_services(self):
         self.shutdown.set()
         if self.tcp_service:
             self.tcp_service.stop()
+            self.tcp_service = None
         if self.udp_service:
             self.udp_service.stop()
-        self.thread_tcp_consumer.join()
-        self.thread_udp_consumer.join()
-        self.thread_update_board.join()
-        self.top_level_widget.quit()
+            self.udp_service = None
+        if self.thread_tcp_consumer and self.thread_tcp_consumer.is_alive():
+            self.thread_tcp_consumer.join()
+            self.thread_tcp_consumer = None
+        if self.thread_udp_consumer and self.thread_udp_consumer.is_alive():
+            self.thread_udp_consumer.join()
+            self.thread_udp_consumer = None
 
+    def stop(self):
+        self.stop_services()
+        self.top_level_widget.quit()
+        print("client stopped")
+
+    def exit(self):
+        self.update_queue.put(("exit",))
+
+# GUI
 CELL_SIZE = 100
 BOARD_SIZE = 3
 CANVAS_PADDING = 20
 FRAMES_PADDING = 5
 TEXT_WIDGET_HEIGHT = 12
+# Networking
 SOCKET_BACK_LOG = 128
 MESSAGE_BUFFER_SIZE = 1024
-
+SERVER_TCP_IP = "127.0.0.1"
+SERVER_TCP_PORT = 55500
+CLIENT_IP = "127.0.0.1"
+CLIENT_UDP_PORT = 33333
+CLIENT_TCP_PORT = 33334
 
 if __name__ == '__main__':
-    client = Client("127.0.0.1", 44444)
+    client = Client(SERVER_TCP_IP, SERVER_TCP_PORT, CLIENT_IP, CLIENT_TCP_PORT, CLIENT_UDP_PORT)
     client.run()
