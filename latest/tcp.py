@@ -34,26 +34,104 @@ import threading
 import json
 import uuid
 import queue
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 
+def setup_game_logger():
+    """
+    Sets up the global logger
+    :return: the global logger
+    """
+    logger = logging.getLogger("TicTacToe_UDP")
+    logger.setLevel(logging.DEBUG)
+    console_handler = logging.StreamHandler()  # prints to console
+    console_handler.setLevel(logging.DEBUG)
+    log_format = "%(asctime)s [%(levelname)s] %(message)s"
+    date_format = "%H:%M:%S"
+    formatter = logging.Formatter(log_format, date_format)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    logging.addLevelName(21, 'CONNECTION')
+    logging.addLevelName(22, 'GAME')
+    logging.addLevelName(23, 'MESSAGE')
+    return logger
+
+
+# create logger instance
+logger = setup_game_logger()
+
+
+def log_connection(message: str) -> None:
+    """
+    Logs a network connection message
+    :param message: a network connection message
+    :return: None
+    """
+    logger.log(21, message)
+
+
+def log_game(message: str) -> None:
+    """
+    Logs a game message
+    :param message: a game message
+    :return: None
+    """
+    logger.log(22, message)
+
+
+def log_message(message: str) -> None:
+    """
+    Logs a displayed message.
+    :param message: a displayed message in GUI
+    :return: None
+    """
+    logger.log(23, message)
+
+
 class StatsDict:
+    """
+    Concurrent statistics cache.
+    """
+
     def __init__(self):
+        """
+        Constructor for StatsDict.
+        """
         self.lock = threading.Lock()
         self.stats = {}
 
-    def increment(self, key: str, field: str):
+    def increment(self, key: str, field: str) -> None:
+        """
+        Increment a field in the value that corresponds to the given key.
+        :param key: the given key
+        :param field: the field
+        :return: None
+        """
         with self.lock:
             if key not in self.stats:
                 self.stats[key] = {"win": 0, "loss": 0, "draw": 0}
             self.stats[key][field] += 1
+            log_game(f"Stats updated for {key}: increment {field}")
 
-    def put(self, key: str, value: dict):
+    def put(self, key: str, value: dict) -> None:
+        """
+        Puts a value into dictionary using the given key.
+        :param key: the given key
+        :param value: the value
+        :return: None
+        """
         with self.lock:
             if key not in self.stats:
                 self.stats[key] = value
+                log_game(f"Stats created for {key}: {value}")
 
-    def get(self, key: str):
+    def get(self, key: str) -> None:
+        """
+        Gets the value of a given key in the dictionary.
+        :param key: the given key.
+        :return: None
+        """
         with self.lock:
             res = None
             if key in self.stats:
@@ -62,23 +140,49 @@ class StatsDict:
 
 
 class ClientConnection:
+    """
+    ClientConnection class. Represents a client connection.
+    """
+
     def __init__(self, connection_socket: socket.socket, connection_address: tuple):
         self.client_socket = connection_socket
         self.client_address = connection_address
 
 
 class Session:
+    """
+    Session class. Represents a session.
+    """
+
     def __init__(self, client_1: ClientConnection, client_2: ClientConnection, ip_udp: str, port_udp: int,
-                 message_buffer_size: int, stats: StatsDict) -> None:
+                 message_buffer_size: int, stats: StatsDict, ip_only_identifier: bool) -> None:
+        """
+        Constructor for Session.
+        :param client_1: the first client connection
+        :param client_2: the second client connection
+        :param ip_udp: the UDP server IP
+        :param port_udp: the UDP server port
+        :param message_buffer_size: the reception buffer size
+        :param stats: the statistics cache
+        :param ip_only_identifier: indicating if only IP is used as key for client statistics caching
+        """
         self.client_1 = client_1
         self.client_2 = client_2
         self.ip_udp = ip_udp
         self.port_udp = port_udp
         self.message_buffer_size = message_buffer_size
         self.stats = stats
+        self.ip_only = ip_only_identifier
         self.session_shutdown = threading.Event()
 
-    def send_stats(self, key, client_to, res):
+    def send_stats(self, key, client_to, res) -> None:
+        """
+        Sends an updated statistics message to the client.
+        :param key: the key
+        :param client_to: the recipient client
+        :param res: the result of the match session
+        :return: None
+        """
         # update the stats
         if res == -1:
             self.stats.increment(key, "loss")
@@ -90,52 +194,75 @@ class Session:
         res = self.stats.get(key)
         message = {"type": "control", "data": {"flag": "stats", "res": res}}
         client_to.client_socket.send(json.dumps(message).encode("utf8"))
+        log_game(f"Stats sent to {client_to.client_address}: {res}")
 
     def process_message(self, client_from: ClientConnection, client_to: ClientConnection) -> None:
+        """
+        Processes a message from a client connection and forward to the other if needed.
+        :param client_from: the sender client
+        :param client_to: the recipient client
+        :return: None
+        """
+        log_message(
+            f"worker thread {threading.current_thread().name} for client {client_from.client_address} starting...")
+        client_to_key = client_to.client_address[
+            0] if self.ip_only else client_to.client_address.__str__()  # serialize client key
+        client_from_key = client_from.client_address[
+            0] if self.ip_only else client_from.client_address.__str__()  # serialize client key
         while not self.session_shutdown.is_set():
             try:
                 message_bytes = client_from.client_socket.recv(self.message_buffer_size)  # bytes
                 if not message_bytes:
-                    client_key = client_to.client_address.__str__()  # serialize client key
-                    self.send_stats(client_key, client_to, 1)
+                    self.send_stats(client_to_key, client_to, 1)
+                    self.stats.increment(client_from_key, "loss")
+                    client_from.client_socket.close()
+                    client_to.client_socket.close()
                     break
                 # parse and process message received
                 try:
                     message_json = json.loads(message_bytes)
-                    print(f"received message: {message_json}")
+                    log_message(f"Received message from {client_from.client_address}: {message_json}")
                     # control message
                     if message_json["type"] == "control":
                         data_json = message_json["data"]  # get data
                         # ------------------------ if game is finished ------------------------
                         if data_json["flag"] == "fin":
-                            client_key = client_from.client_address.__str__()  # serialize client key
                             # update the stats
                             if data_json["res"] == -1:
-                                self.send_stats(client_key, client_from, -1)
+                                log_game(f"Client {client_from.client_address} reported loss")
+                                self.send_stats(client_from_key, client_from, -1)
                             elif data_json["res"] == 0:
-                                self.send_stats(client_key, client_from, 0)
+                                log_game(f"Client {client_from.client_address} reported draw")
+                                self.send_stats(client_from_key, client_from, 0)
                             elif data_json["res"] == 1:
-                                self.send_stats(client_key, client_from, 1)
+                                log_game(f"Client {client_from.client_address} reported win")
+                                self.send_stats(client_from_key, client_from, 1)
                             self.session_shutdown.set()
                             break
                     # chat message
                     elif message_json["type"] == "message":
                         client_to.client_socket.send(message_bytes)
-                        print(
-                            f"forwarded {json.loads(message_bytes)} from {client_from.client_address} to {client_to.client_address}")
+                        log_message(
+                            f"Forwarded message from {client_from.client_address} to {client_to.client_address}")
                 except json.decoder.JSONDecodeError:
-                    print("failed to parse message")
+                    logger.error(f"Failed to parse message from {client_from.client_address}")
                     continue
             except socket.error as e:
-                print("socket error", e)
+                logger.error(f"Socket error in session: {e}")
                 self.session_shutdown.set()
                 break
             except Exception as e:
-                print("session error:", e)
+                logger.error(f"Session error: {e}")
                 self.session_shutdown.set()
                 break
+        log_message(
+            f"worker thread {threading.current_thread().name} for client {client_from.client_address} exiting...")
 
     def run(self) -> None:
+        """
+        Starts a session.
+        :return: None
+        """
         # sends UDP server info
         self.init_match()
         # starts two threads to handle bidirectional message exchange between clients because recv() call is blocking
@@ -144,16 +271,24 @@ class Session:
         # starts threads
         thread_1.start()
         thread_2.start()
+        log_connection(f"Session threads started for match")
         # wait on session shutdown
         self.session_shutdown.wait()
         # joint threads
         thread_1.join()
         thread_2.join()
+        log_connection("Session threads stopped")
         # close client sockets
         self.client_1.client_socket.close()
         self.client_2.client_socket.close()
+        log_message(f"session ended for client {self.client_1.client_address} and {self.client_2.client_address}")
+        log_connection("Client sockets closed")
 
     def init_match(self) -> None:
+        """
+        Initialize a match.
+        :return: None
+        """
         message = {
             "type": "control",
             "data": {
@@ -164,36 +299,65 @@ class Session:
             }
         }
         message_bytes = json.dumps(message).encode("utf8")
-        print(f"match {message["data"]["id"]} created")
+        match_id = message['data']['id']
+        log_game(f"Match {match_id} created")
         self.client_1.client_socket.send(message_bytes)
         self.client_2.client_socket.send(message_bytes)
+        log_connection(f"Init messages sent to both clients for match {match_id}")
 
 
 class SessionManager:
+    """
+    SessionManager class.
+    """
+
     def __init__(self, client_connection_queue: queue.Queue, worker_size: int, ip_udp: str, port_udp: int,
-                 message_buffer_size: int, stats: StatsDict) -> None:
+                 message_buffer_size: int, stats: StatsDict, ip_only_identifier: bool) -> None:
+        """
+        Constructor for SessionManager class.
+        :param client_connection_queue: the match making queue
+        :param worker_size: the worker thread pool size
+        :param ip_udp: the UDP server IP
+        :param port_udp: the UDP server port
+        :param message_buffer_size: the reception buffer size
+        :param stats: the statistics cache
+        :param ip_only_identifier: indicating if only IP is used as key for client statistics caching
+        """
         self.connection_queue = client_connection_queue
         self.worker_pool = ThreadPoolExecutor(max_workers=worker_size)
         self.ip_udp = ip_udp
         self.port_udp = port_udp
         self.message_buffer_size = message_buffer_size
         self.stats = stats
+        self.ip_only = ip_only_identifier
 
     def run(self) -> None:
+        """
+        Starts the session manager.
+        :return: None
+        """
+        log_connection("Session manager running")
         while True:
             try:
                 client_1 = self.connection_queue.get()  # blocking call
                 if client_1 is None:  # if poison, break
+                    log_connection("Received shutdown signal")
                     break
+                log_connection(f"First client connected: {client_1.client_address}")
                 client_2 = self.connection_queue.get()  # blocking call
                 if client_2 is None:  # if poison, break
+                    log_connection("Received shutdown signal")
                     break
+                log_connection(f"Second client connected: {client_2.client_address}")
+                log_game(f"Creating match between {client_1.client_address} and {client_2.client_address}")
                 self.worker_pool.submit(SessionManager.run_session,
                                         Session(client_1, client_2, self.ip_udp, self.port_udp,
-                                                self.message_buffer_size, self.stats))  # if two players arrive
+                                                self.message_buffer_size, self.stats,
+                                                self.ip_only))  # if two players arrive
             except Exception as e:
-                print("session manager error:", e)
+                logger.error(f"Session manager error: {e}")
                 continue
+        log_connection("Session manager shutting down")
         self.worker_pool.shutdown(wait=False)  # does not wait for client to close connections
 
     @staticmethod
@@ -203,7 +367,18 @@ class SessionManager:
 
 class TCPServer:
     def __init__(self, ip_tcp: str, port_tcp: int, ip_udp: str, port_udp: int, message_buffer_size: int,
-                 socket_back_log: int, session_manager_worker_pool_size: int) -> None:
+                 socket_back_log: int, session_manager_worker_pool_size: int, ip_only_identifier: bool) -> None:
+        """
+        Constructor for TCPServer class.
+        :param ip_tcp: the TCP server IP
+        :param port_tcp: the TCP server port
+        :param ip_udp: the UDP server IP
+        :param port_udp: the UDP server port
+        :param message_buffer_size: the reception buffer size
+        :param socket_back_log: backlog size for TCP connections
+        :param session_manager_worker_pool_size:
+        :param ip_only_identifier: indicating if only IP is used as key for client statistics caching
+        """
         # parameters
         self.ip_tcp = ip_tcp
         self.port_tcp = port_tcp
@@ -212,6 +387,7 @@ class TCPServer:
         self.message_buffer_size = message_buffer_size
         self.socket_back_log = socket_back_log
         self.session_manager_worker_pool_size = session_manager_worker_pool_size
+        self.ip_only = ip_only_identifier
         self.stats = StatsDict()
         # blocking queue for client connections
         self.connection_queue = queue.Queue()  # client TCP connection buffer
@@ -220,28 +396,30 @@ class TCPServer:
         self.server_socket.bind((self.ip_tcp, self.port_tcp))
         # session manager
         self.session_manager = SessionManager(self.connection_queue, self.session_manager_worker_pool_size, self.ip_udp,
-                                              self.port_udp, self.message_buffer_size, self.stats)
+                                              self.port_udp, self.message_buffer_size, self.stats, self.ip_only)
         self.session_manager_thread = threading.Thread(target=self.session_manager.run)
 
     def start(self) -> None:
         try:
             self.session_manager_thread.start()
-            print("session manager thread started...")
+            log_connection("Session manager thread started")
             self.server_socket.listen(self.socket_back_log)
-            print("server is listening for incoming connections...")
+            log_connection(f"TCP server listening at {self.ip_tcp}:{self.port_tcp}")
             while True:
                 client_socket, client_address = self.server_socket.accept()  # blocking call
+                log_connection(f"Client {client_address} connected")
                 self.connection_queue.put(ClientConnection(client_socket, client_address))
-                print(f"client {client_socket, client_address} is connected end enqueued...")
+                log_connection(f"Client {client_address} enqueued for matchmaking")
         except KeyboardInterrupt:
+            log_connection("Keyboard interrupt received, shutting down TCP server")
             for i in range(self.session_manager_worker_pool_size):
                 self.connection_queue.put(None)
-            print("poison submitted to blocking queue...")
+            log_connection("Shutdown signals sent to session manager")
             self.server_socket.close()
-            print("server socket closed...")
+            log_connection("Server socket closed")
         finally:
             self.session_manager_thread.join()
-            print("session manager thread pool stopped...")
+            log_connection("Session manager thread stopped")
 
 
 SERVER_TCP_IP = "127.0.0.1"
@@ -251,8 +429,19 @@ SERVER_UDP_PORT = 55501
 MESSAGE_BUFFER_SIZE = 1024
 SOCKET_BACK_LOG = 512
 SESSION_MANAGER_WORKER_POOL_SIZE = 32
+# 1) If running all servers and clients on different machines within a LAN:
+#    Set IP_ONLY_IDENTIFIER = True and CLIENT_TCP_PORT = None.
+#    This is the recommended configuration, as it avoids port conflicts by relying solely on the client's IP address
+#    for identification.
+# 2) If running all servers and clients on localhost (same machine):
+#    Set IP_ONLY_IDENTIFIER = False and assign a user-specified value to CLIENT_TCP_PORT.
+#    Note: This setup may raise "OSError: [Errno 48] Address already in use" when attempting to initiate a new game
+#    after one has ended. This occurs because a recently closed socket may still be in the TIME_WAIT state, preventing
+#    the same address from being rebound immediately.
+IP_ONLY_IDENTIFIER = False
 
 if __name__ == "__main__":
+    log_connection("Starting Tic Tac Toe TCP server")
     tcp_server = TCPServer(SERVER_TCP_IP, SERVER_TCP_PORT, SERVER_UDP_IP, SERVER_UDP_PORT, MESSAGE_BUFFER_SIZE,
-                           SOCKET_BACK_LOG, SESSION_MANAGER_WORKER_POOL_SIZE)
+                           SOCKET_BACK_LOG, SESSION_MANAGER_WORKER_POOL_SIZE, IP_ONLY_IDENTIFIER)
     tcp_server.start()
