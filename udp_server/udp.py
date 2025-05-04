@@ -23,64 +23,9 @@ import socket
 import threading
 import queue
 import json
-import logging
 from concurrent.futures import ThreadPoolExecutor
-
-
-def setup_game_logger():
-    """
-    Sets up the global logger
-    :return: the global logger
-    """
-    logger = logging.getLogger("TicTacToe_UDP")
-    logger.setLevel(logging.DEBUG)
-    console_handler = logging.StreamHandler()  # prints to console
-    console_handler.setLevel(logging.DEBUG)
-    log_format = "%(asctime)s [%(levelname)s] %(message)s"
-    date_format = "%H:%M:%S"
-    formatter = logging.Formatter(log_format, date_format)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    file_handler = logging.FileHandler("./udp server.log")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-    logging.addLevelName(21, 'CONNECTION')
-    logging.addLevelName(22, 'GAME')
-    logging.addLevelName(23, 'MESSAGE')
-    return logger
-
-
-# create logger instance
-logger = setup_game_logger()
-
-
-def log_connection(message: str) -> None:
-    """
-    Logs a network connection message
-    :param message: a network connection message
-    :return: None
-    """
-    logger.log(21, message)
-
-
-def log_game(message: str) -> None:
-    """
-    Logs a game message
-    :param message: a game message
-    :return: None
-    """
-    logger.log(22, message)
-
-
-def log_message(message: str) -> None:
-    """
-    Logs a displayed message.
-    :param message: a displayed message in GUI
-    :return: None
-    """
-    logger.log(23, message)
-
+import logging
+from logger.logger import Logger
 
 class UDPService:
     """
@@ -118,12 +63,12 @@ class UDPService:
         Receives UDP messages.
         :return: None
         """
-        log_connection(f"UDP receive service started on {self.host_ip}:{self.recv_port}")
+        LOGGER.debug(f"UDP receive service started on {self.host_ip}:{self.recv_port}")
         while True:
             try:
                 message_bytes, client_address = self.socket_recv.recvfrom(self.message_buffer_size)
                 message_json = json.loads(message_bytes)
-                log_message(f"Received {message_json} from {client_address}")
+                LOGGER.debug(f"Received {message_json} from {client_address}")
                 self.buffer_in.put(
                     {
                         "client": client_address,
@@ -131,16 +76,16 @@ class UDPService:
                     }
                 )
             except OSError as e:
-                log_connection(f"UDP receive service closed due to socket error {e}")
+                LOGGER.debug(f"UDP receive service closed due to socket error {e}")
                 break
-        log_connection("UDP receive service stopped")
+        LOGGER.debug("UDP receive service stopped")
 
     def send_message(self) -> None:
         """
         Sends UDP messages.
         :return: None
         """
-        log_connection(f"UDP send service started on {self.host_ip}:{self.send_port}")
+        LOGGER.debug(f"UDP send service started on {self.host_ip}:{self.send_port}")
         while True:
             try:
                 message_json = self.buffer_out.get()
@@ -148,19 +93,19 @@ class UDPService:
                     break
                 client_address = message_json["client"]
                 message_bytes = json.dumps(message_json["message"]).encode("utf8")
-                log_message(f"Sending message to {client_address}: {message_json['message']}")
+                LOGGER.debug(f"Sending message to {client_address}: {message_json['message']}")
                 self.socket_send.sendto(message_bytes, client_address)
             except Exception as e:
-                logger.error(f"Failed to send message: {e}")
+                LOGGER.error(f"Failed to send message: {e}")
                 break
-        log_connection("UDP send service stopped")
+        LOGGER.debug("UDP send service stopped")
 
     def start(self) -> None:
         """
         Starts the UDP network service.
         :return: None
         """
-        log_connection("Starting UDP service")
+        LOGGER.debug("Starting UDP service")
         self.thread_send.start()
         self.thread_recv.start()
 
@@ -169,13 +114,13 @@ class UDPService:
         Stops the UDP network service.
         :return: None
         """
-        log_connection("Stopping UDP service")
+        LOGGER.debug("Stopping UDP service")
         self.buffer_out.put(None)
         self.socket_recv.close()
         self.socket_send.close()
         self.thread_send.join()
         self.thread_recv.join()
-        log_connection("UDP service stopped")
+        LOGGER.debug("UDP service stopped")
 
 
 class SessionManager:
@@ -253,7 +198,7 @@ class SessionManager:
         Manges session lifecycle.
         :return: None
         """
-        log_message(f"worker thread {threading.current_thread().name} starting...")
+        LOGGER.debug(f"worker thread {threading.current_thread().name} starting...")
         while True:
             message_in = self.buffer_in.get()
             if message_in is None:
@@ -269,12 +214,12 @@ class SessionManager:
                 # -2 indicates that the match is over due to opponent disconnecting TCP socket unexpectedly
                 if client_move == -2:
                     if session is not None:
-                        log_game(f"Cleaning up session {session_id}")
+                        LOGGER.info(f"Cleaning up session {session_id}")
                         self.sessions.pop(session_id)
                     continue
                 # ----------------------- if session does not exist -----------------------
                 if session is None:
-                    log_game(f"Creating new session {session_id} for client {client_address}")
+                    LOGGER.info(f"Creating new session {session_id} for client {client_address}")
                     self.sessions[session_id] = {
                         "id": session_id,
                         "clients": [client_address],
@@ -286,11 +231,11 @@ class SessionManager:
                     continue
                 # ----------------------- if session exists but the second player is missing -----------------------
                 if len(session["clients"]) == 1 and client_address != session["clients"][0]:
-                    log_game(f"Second player {client_address} joined session {session_id}")
+                    LOGGER.info(f"Second player {client_address} joined session {session_id}")
                     session["clients"].append(client_address)
                     self.to_buffer_out(client_address, session_id, False, -3, session["data"])
                     # commit outbound message to both clients, client 0 always has the first move, -2 for ongoing match
-                    log_game(f"Starting match for session {session_id}")
+                    LOGGER.info(f"Starting match for session {session_id}")
                     self.to_buffer_out(session["clients"][0], session_id, True, -2, session["data"])
                     self.to_buffer_out(session["clients"][1], session_id, False, -2, session["data"])
                     continue
@@ -299,54 +244,54 @@ class SessionManager:
                 # ignores update if the same player tries to update the session again, or if the player move is invalid, player loses
                 if client_address != session["clients"][current_player] or not self.is_valid_move(client_move,
                                                                                                   session["data"]):
-                    log_game(f"Invalid move in session {session_id}: player={current_player}, move={client_move}")
+                    LOGGER.info(f"Invalid move in session {session_id}: player={current_player}, move={client_move}")
                     self.to_buffer_out(session["clients"][current_player], session_id, False, -1, session["data"])
                     self.to_buffer_out(session["clients"][(current_player + 1) % 2], session_id, False, 1,
                                        session["data"])
                     # delete session
-                    log_game(f"Session {session_id} ended due to invalid move")
+                    LOGGER.info(f"Session {session_id} ended due to invalid move")
                     self.sessions.pop(session_id)
                     continue
                 # if both player and move are valid, update player move
                 session["data"][client_move] = current_player
-                log_game(f"Valid move in session {session_id}: player={current_player}, move={client_move}")
+                LOGGER.info(f"Valid move in session {session_id}: player={current_player}, move={client_move}")
                 
                 # check for session termination [start] -----------------------
                 if self.is_win_state(session["data"]):
-                    log_game(f"Player {current_player} won in session {session_id}")
+                    LOGGER.info(f"Player {current_player} won in session {session_id}")
                     # commit outbound message
                     self.to_buffer_out(session["clients"][current_player], session_id, False, 1, session["data"])
                     self.to_buffer_out(session["clients"][(current_player + 1) % 2], session_id, False, -1,
                                        session["data"])
                     # delete session
-                    log_game(f"Session {session_id} ended with winner")
+                    LOGGER.info(f"Session {session_id} ended with winner")
                     self.sessions.pop(session_id)
                     continue
                 if self.is_draw_state(session["data"]):
-                    log_game(f"Draw in session {session_id}")
+                    LOGGER.info(f"Draw in session {session_id}")
                     # commit outbound message
                     self.to_buffer_out(session["clients"][current_player], session_id, False, 0, session["data"])
                     self.to_buffer_out(session["clients"][(current_player + 1) % 2], session_id, False, 0,
                                        session["data"])
                     # delete session
-                    log_game(f"Session {session_id} ended with draw")
+                    LOGGER.info(f"Session {session_id} ended with draw")
                     self.sessions.pop(session_id)
                     continue
                 # check for session termination [end] -----------------------
                 # if session not terminated, switch turns
                 session["turn"] = (current_player + 1) % 2
-                log_game(f"Turn changed in session {session_id}: new turn={session['turn']}")
+                LOGGER.info(f"Turn changed in session {session_id}: new turn={session['turn']}")
                 # commit outbound message
                 self.to_buffer_out(session["clients"][current_player], session_id, False, -2, session["data"])
                 self.to_buffer_out(session["clients"][session["turn"]], session_id, True, -2, session["data"])
-        log_message(f"worker thread {threading.current_thread().name} exiting...")
+        LOGGER.debug(f"worker thread {threading.current_thread().name} exiting...")
 
     def start(self) -> None:
         """
         Starts the session manager.
         :return: None
         """
-        log_connection(f"Starting session manager pool with {self.worker_pool_size} workers")
+        LOGGER.debug(f"Starting session manager pool with {self.worker_pool_size} workers")
         for i in range(self.worker_pool_size):
             self.worker_pool.submit(self.manage_session)
 
@@ -355,11 +300,11 @@ class SessionManager:
         Stops the session manager.
         :return: None
         """
-        log_connection("Stopping session manager pool")
+        LOGGER.debug("Stopping session manager pool")
         for i in range(self.worker_pool_size):
             self.buffer_in.put(None)
         self.worker_pool.shutdown(wait=True)
-        log_connection("Session manager pool stopped")
+        LOGGER.debug("Session manager pool stopped")
 
 
 class UDPServer:
@@ -394,7 +339,7 @@ class UDPServer:
         """
         self.session_manager.start()
         self.udp_service.start()
-        log_connection("UDP server fully started")
+        LOGGER.debug("UDP server fully started")
 
     def stop(self) -> None:
         """
@@ -403,9 +348,15 @@ class UDPServer:
         """
         self.udp_service.stop()
         self.session_manager.stop()
-        log_connection("UDP server fully stopped")
+        LOGGER.debug("UDP server fully stopped")
 
 
+# ------------------------------- logger setup -------------------------------
+LOG_LEVEL = logging.DEBUG
+LOG_FORMAT = "%(asctime)s [%(filename)s] [%(levelname)s] %(message)s"
+LOG_FILE = "./udp_server.log"
+LOGGER = Logger(__file__, LOG_LEVEL, LOG_FORMAT, LOG_FILE, "a").get_logger()
+# ------------------------------- server setup -------------------------------
 SERVER_UDP_IP = "127.0.0.1"
 SERVER_UDP_RECV_PORT = 55501
 SERVER_UDP_SEND_PORT = 55502
@@ -413,14 +364,14 @@ MESSAGE_BUFFER_SIZE = 1024
 SESSION_MANAGER_WORKER_POOL_SIZE = 8
 
 if __name__ == '__main__':
-    log_connection("Starting Tic Tac Toe UDP server")
+    LOGGER.info("Starting Tic Tac Toe UDP server")
     udp_server = UDPServer(SERVER_UDP_IP, SERVER_UDP_RECV_PORT, SERVER_UDP_SEND_PORT, MESSAGE_BUFFER_SIZE,
                            SESSION_MANAGER_WORKER_POOL_SIZE)
     udp_server.start()
     try:
-        log_connection("UDP server running. Press Ctrl+C to stop.")
+        LOGGER.info("UDP server running. Press Ctrl+C to stop.")
         while True:
             threading.Event().wait()
     except KeyboardInterrupt:
-        log_connection("Keyboard interrupt received, shutting down UDP server")
+        LOGGER.info("Keyboard interrupt received, shutting down UDP server")
         udp_server.stop()

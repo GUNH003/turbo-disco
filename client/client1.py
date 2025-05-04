@@ -4,61 +4,7 @@ import threading
 import queue
 import json
 import logging
-
-
-def game_logger_setup() -> logging.Logger:
-    """
-    Sets up the global logger
-    :return: the global logger
-    """
-    logger = logging.getLogger("TicTacToe Game")
-    logger.setLevel(logging.DEBUG)
-    console_handler = logging.StreamHandler()  # prints to console
-    console_handler.setLevel(logging.DEBUG)
-    log_format = "%(asctime)s [%(levelname)s] %(message)s"
-    date_format = "%H:%M:%S"
-    formatter = logging.Formatter(log_format, date_format)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    file_handler = logging.FileHandler("./client1.log")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-    logging.addLevelName(21, 'CONNECTION')
-    logging.addLevelName(22, 'GAME')
-    logging.addLevelName(23, 'MESSAGE')
-    return logger
-
-
-# create logger instance
-logger = game_logger_setup()
-
-
-def log_connection(message: str) -> None:
-    """
-    Logs a network connection message
-    :param message: a network connection message
-    :return: None
-    """
-    logger.log(21, message)
-
-
-def log_game(message: str) -> None:
-    """
-    Logs a game message
-    :param message: a game message
-    :return: None
-    """
-    logger.log(22, message)
-
-
-def log_message(message: str) -> None:
-    """
-    Logs a displayed message.
-    :param message: a displayed message in GUI
-    :return: None
-    """
-    logger.log(23, message)
+from logger.logger import Logger
 
 
 class TCPService:
@@ -99,13 +45,13 @@ class TCPService:
                 break
             try:
                 self.socket_tcp.send(message.encode())
-                log_message(f"successfully sent TCP message {message}")
+                LOGGER.debug(f"successfully sent TCP message {message}")
             except socket.error as e:
-                logger.error(f"failed to send message {message}", e)
+                LOGGER.error(f"failed to send message {message}", e)
                 self.shutdown.set()
                 break
             except KeyboardInterrupt:
-                log_connection("TCP send service received keyboard interrupt")
+                LOGGER.debug("TCP send service received keyboard interrupt")
                 self.shutdown.set()
                 break
 
@@ -118,17 +64,17 @@ class TCPService:
             try:
                 message_bytes = self.socket_tcp.recv(MESSAGE_BUFFER_SIZE)
                 if not message_bytes:
-                    log_connection("TCP recv connection closed")
+                    LOGGER.debug("TCP recv connection closed")
                     self.shutdown.set()
                     break
                 self.buffer_in.put(message_bytes.decode())
-                log_message(f"successfully received TCP message {message_bytes.decode()}")
+                LOGGER.debug(f"successfully received TCP message {message_bytes.decode()}")
             except socket.error as e:
-                log_connection(f"TCP recv service closed due to socket error {e}")
+                LOGGER.debug(f"TCP recv service closed due to socket error {e}")
                 self.shutdown.set()
                 break
             except KeyboardInterrupt:
-                log_connection("TCP recv service received keyboard interrupt")
+                LOGGER.debug("TCP recv service received keyboard interrupt")
                 self.shutdown.set()
                 break
 
@@ -139,7 +85,7 @@ class TCPService:
         """
         self.thread_send.start()
         self.thread_recv.start()
-        log_connection("TCP service started")
+        LOGGER.debug("TCP service started")
 
     def get_message(self) -> str:
         """
@@ -167,7 +113,7 @@ class TCPService:
         self.socket_tcp.close()
         self.thread_recv.join()
         self.buffer_in.put(None)
-        log_connection("TCP service stopped")
+        LOGGER.debug("TCP service stopped")
 
 
 class UDPService:
@@ -205,13 +151,13 @@ class UDPService:
                 break
             try:
                 self.socket_udp.sendto(message.encode(), (self.server_ip, self.server_port))
-                log_message(f"successfully sent UDP message {message}")
+                LOGGER.debug(f"successfully sent UDP message {message}")
             except socket.error as e:
-                log_connection(f"failed to send message {message} due to socket error {e}")
+                LOGGER.debug(f"failed to send message {message} due to socket error {e}")
                 self.shutdown.set()
                 break
             except KeyboardInterrupt:
-                log_connection("UDP send service received keyboard interrupt")
+                LOGGER.debug("UDP send service received keyboard interrupt")
                 self.shutdown.set()
                 break
 
@@ -224,13 +170,13 @@ class UDPService:
             try:
                 message_bytes, addr = self.socket_udp.recvfrom(MESSAGE_BUFFER_SIZE)
                 self.buffer_in.put(message_bytes.decode())
-                log_message(f"successfully received UDP message {message_bytes.decode()}")
+                LOGGER.debug(f"successfully received UDP message {message_bytes.decode()}")
             except socket.error as e:
-                log_connection(f"UDP recv service closed due to socket error {e}")
+                LOGGER.debug(f"UDP recv service closed due to socket error {e}")
                 self.shutdown.set()
                 break
             except KeyboardInterrupt:
-                log_connection("UDP recv service received keyboard interrupt")
+                LOGGER.debug("UDP recv service received keyboard interrupt")
                 self.shutdown.set()
                 break
 
@@ -241,7 +187,7 @@ class UDPService:
         """
         self.thread_send.start()
         self.thread_recv.start()
-        log_connection("UDP service started")
+        LOGGER.debug("UDP service started")
 
     def get_message(self) -> str:
         """
@@ -269,7 +215,7 @@ class UDPService:
         self.socket_udp.close()
         self.thread_recv.join()
         self.buffer_in.put(None)
-        log_connection("UDP service stopped")
+        LOGGER.debug("UDP service stopped")
 
 
 class Client:
@@ -319,7 +265,6 @@ class Client:
         self.thread_tcp_consumer = None
         self.thread_udp_consumer = None
         self.top_level_widget.after(10, self.process_gui_updates)
-        log_connection(f"Client initialized with TCP server {ip_tcp_server}:{port_tcp_server}")
 
     def process_gui_updates(self) -> None:
         """
@@ -339,12 +284,13 @@ class Client:
                                                   self.port_tcp_server)
                     self.tcp_service.start()
                     self.display_message("[MATCH] Match making...")
+                    LOGGER.debug(f"Client initialized with TCP server {self.ip_tcp_server}:{self.port_tcp_server}")
                 elif update_type == "restart":
                     if not self.match_over:
                         self.display_message("[ERROR] Current match is not over, cannot find new match...")
-                        log_game("Restart rejeced: match in progress")
+                        LOGGER.info("Restart rejected: match in progress")
                     else:
-                        log_game("Restarting game services and finding new match")
+                        LOGGER.info("Restarting game services and finding new match")
                         self.stop_services()
                         self.session_id = None
                         self.turn = None
@@ -361,7 +307,7 @@ class Client:
                     self.session_id = msg_json["data"]["id"]
                     ip_udp = msg_json["data"]["ip"]
                     port_udp = msg_json["data"]["port"]
-                    log_connection(f"UDP connection to {ip_udp}:{port_udp} for session {self.session_id}")
+                    LOGGER.debug(f"UDP connection to {ip_udp}:{port_udp} for session {self.session_id}")
                     self.udp_service = UDPService(self.ip_client, self.port_udp_client, ip_udp, port_udp)
                     self.udp_service.start()
                     self.udp_service.put_message(json.dumps({"id": self.session_id, "data": -1}))
@@ -370,22 +316,22 @@ class Client:
                     msg_json = args[0]
                     self.session_id = msg_json["id"]
                     self.player = 0 if msg_json["turn"] else 1
-                    log_game(f"Match intialized: session {self.session_id}, player {self.player}")
+                    LOGGER.debug(f"Match initialized: session {self.session_id}, player {self.player}")
                     self.display_message("[MATCH] Waiting for opponent")
                 elif update_type == "update_match":
                     msg_json = args[0]
                     if self.board is None:
                         self.display_message("[MATCH] Opponent has joined")
-                        log_game("Opponent joined the match")
+                        LOGGER.debug("Opponent joined the match")
                     self.turn = msg_json["turn"]
                     if self.turn:
                         turn_status = "[TURN] Your Turn!"
                     else:
                         turn_status = "[TURN] Opponents Turn!"
                     self.display_message(turn_status)
-                    log_game(f"Turn update: {turn_status}")
+                    LOGGER.info(f"Turn update: {turn_status}")
                     self.board = msg_json["data"]
-                    log_game(f"Board state: {self.board} ")
+                    LOGGER.debug(f"Board state: {self.board} ")
                     self.draw_board()
                 elif update_type == "end_match":
                     msg_json = args[0]
@@ -402,12 +348,12 @@ class Client:
                         result_message = "[GAME] You Won! :)"
                         self.tcp_service.put_message(
                             json.dumps({"type": "control", "data": {"flag": "fin", "res": res}}))
-                    log_game(f"Match ended: {result_message}")
+                    LOGGER.info(f"Match ended: {result_message}")
                     self.display_message(result_message)
                     self.board = msg_json["data"]
                     self.draw_board()
                     self.udp_service.put_message(json.dumps({"id": self.session_id, "data": -2}))
-                    log_message("UDP Clean message sent")
+                    LOGGER.debug("UDP Clean message sent")
                 elif update_type == "stats":
                     self.udp_service.put_message(
                         json.dumps({"id": self.session_id, "data": -2}))  # sends the clean message
@@ -418,10 +364,10 @@ class Client:
                     draws = stats_json.get("draw", 0)
                     stats_message = f"[STATS] Game Stats: {wins} Wins, {losses} Losses, {draws} Draws"
                     self.display_message(stats_message)
-                    log_game(f"Stats received: {stats_json}")
+                    LOGGER.debug(f"Stats received: {stats_json}")
                     self.match_over = True
                 elif update_type == "exit":
-                    log_connection("Exit Requested")
+                    LOGGER.debug("Exit Requested")
                     self.shutdown.set()
                     self.stop()
         except queue.Empty:
@@ -452,7 +398,7 @@ class Client:
             index = row * BOARD_SIZE + col
             if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE and self.board[index] == -1:  # BOARD_SIZE = 3
                 self.board[index] = self.player  # update board state
-                log_game(f"Player made a move at position {index}")
+                LOGGER.debug(f"Player made a move at position {index}")
                 self.update_queue.put(("board", self.board.copy()))  # Sends a copy
                 if self.udp_service:
                     self.udp_service.put_message(json.dumps({
@@ -460,10 +406,10 @@ class Client:
                         "data": index
                     }))
             else:
-                log_game(f"Invalid move attempted at position {index}")
+                LOGGER.debug(f"Invalid move attempted at position {index}")
                 self.display_message("[ERROR] Invalid Move!")
         else:
-            log_game("Move attempted when not player's turn")
+            LOGGER.debug("Move attempted when not player's turn")
             self.display_message("[ERROR] Not your Turn!")
 
     def draw_board(self) -> None:
@@ -551,7 +497,7 @@ class Client:
             self.update_queue.put(("message", "[YOU]: " + message))
             if self.tcp_service:
                 self.tcp_service.put_message(json.dumps({"type": "message", "data": message}))
-                log_message(f"Chat message sent: {message}")
+                LOGGER.debug(f"Chat message sent: {message}")
             self.entry_message_input.delete(0, tk.END)
         return message
 
@@ -561,7 +507,7 @@ class Client:
         :return: None
         """
         # finds new match
-        log_game("Finding new match requested")
+        LOGGER.info("Finding new match requested")
         if self.tcp_service is None:
             self.update_queue.put(("start_tcp",))
         else:
@@ -572,35 +518,35 @@ class Client:
         TCP service message consumer task.
         :return: None
         """
-        log_connection("TCP consumer thread started")
+        LOGGER.debug("TCP consumer thread started")
         while not self.shutdown.is_set():
             if self.tcp_service:
                 msg = self.tcp_service.get_message()
                 if msg is None:
                     break
                 msg_json = json.loads(msg)
-                log_message(f"TCP message received: {msg_json}")
+                LOGGER.debug(f"TCP message received: {msg_json}")
                 if msg_json["type"] == "control" and msg_json["data"]["flag"] == "init":
                     self.update_queue.put(("start_udp", msg_json))
                 elif msg_json["type"] == "control" and msg_json["data"]["flag"] == "stats":
                     self.update_queue.put(("stats", msg_json))
                 elif msg_json["type"] == "message":
                     self.update_queue.put(("message", "[OPPONENT]: " + msg_json["data"]))
-        log_connection("TCP consumer thread stopped")
+        LOGGER.debug("TCP consumer thread stopped")
 
     def consume_message_udp(self) -> None:
         """
         UDP service message consumer task.
         :return: None
         """
-        log_connection("UDP consumer thread started")
+        LOGGER.debug("UDP consumer thread started")
         while not self.shutdown.is_set():
             if self.udp_service:
                 msg = self.udp_service.get_message()
                 if msg is None:
                     break
                 msg_json = json.loads(msg)
-                log_message(f"UDP message received: {msg_json}")
+                LOGGER.debug(f"UDP message received: {msg_json}")
                 # match state
                 res = msg_json["res"]
                 if res == -3:
@@ -609,14 +555,14 @@ class Client:
                     self.update_queue.put(("update_match", msg_json))
                 else:
                     self.update_queue.put(("end_match", msg_json))
-        log_connection("UDP consumer thread stopped")
+        LOGGER.debug("UDP consumer thread stopped")
 
     def run(self) -> None:
         """
         Runs the client GUI.
         :return:
         """
-        log_connection("Client main loop starting")
+        LOGGER.info("Client main loop starting")
         self.top_level_widget.mainloop()
 
     def stop_services(self) -> None:
@@ -624,7 +570,7 @@ class Client:
         Stops network services.
         :return: None
         """
-        log_connection("Stopping client services")
+        LOGGER.info("Stopping client services")
         self.shutdown.set()
         if self.tcp_service:
             self.tcp_service.stop()
@@ -646,7 +592,7 @@ class Client:
         """
         self.stop_services()
         self.top_level_widget.quit()
-        log_connection("Client stopped")
+        LOGGER.info("Client stopped")
 
     def exit(self) -> None:
         """
@@ -655,7 +601,12 @@ class Client:
         """
         self.update_queue.put(("exit",))
 
-
+# ------------------------------- logger setup -------------------------------
+LOG_LEVEL = logging.DEBUG
+LOG_FORMAT = "%(asctime)s [%(filename)s] [%(levelname)s] %(message)s"
+LOG_FILE = "./tcp_server.log"
+LOGGER = Logger(__file__, LOG_LEVEL, LOG_FORMAT, LOG_FILE, "a").get_logger()
+# ------------------------------- client setup -------------------------------
 # GUI
 CELL_SIZE = 100
 BOARD_SIZE = 3
